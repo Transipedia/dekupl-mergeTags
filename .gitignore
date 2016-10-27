@@ -1,0 +1,7 @@
+*.tsv
+*.tsv.gz
+mergeTags
+*.o 
+*.swp
+*.dSYM
+.DS_Store
