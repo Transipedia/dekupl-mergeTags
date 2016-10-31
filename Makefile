@@ -1,8 +1,8 @@
 CC=gcc
-CFLAGS=-g -Wall -O2 -Wno-unused-function -lm -lpthread
+CFLAGS=-g -Wall -O2 -Wno-unused-function
 HEADERS=kstring.h
 OBJECTS=$(HEADERS:.h=.o)
-LIBS=-lz -lm -lcurl
+LIBS=-lz
 
 all:mergeTags
 

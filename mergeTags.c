@@ -11,251 +11,52 @@
 #include "kvec.h"
 #include "dna.h"
 
-#define VERSION "0.0.1"
+#define VERSION "0.0.2"
 
-#define AMBIGUITY_ABORT 1
-#define NO_KMER_ABORT   2
-
-#define VIRGIN_KMER 0
-#define ASSEMBLED_KMER 1
+#define MIN_ASSEMBLY_K 15
 
 KSEQ_INIT(gzFile, gzread)
+
+typedef struct {
+  uint32_t ref_kmer_id;
+  double   pvalue;
+  int      nb_merged_kmers;
+  char     *seq;
+} assembly_t;
+
+void assembly_destroy(assembly_t *a) {
+  if(a->seq)
+    free(a->seq);
+  free(a);
+}
+
+int cmp_assembly(const void * a, const void * b) {
+  const assembly_t *ass_a = *(const assembly_t **)a;
+  const assembly_t *ass_b = *(const assembly_t **)b;
+  if(ass_a->ref_kmer_id == ass_b->ref_kmer_id) {
+    return 0;
+  } else {
+    return (ass_a->ref_kmer_id - ass_b->ref_kmer_id);
+  }
+}
 
 // Init k-mers hash
 KHASH_MAP_INIT_INT64(kmers, uint32_t)
 
 typedef khash_t(kmers) kmers_hash_t;
-typedef kvec_t(char*) assemblies_array_t;
-
-int load_kmers(const char* counts_file, size_t k_length, kmers_hash_t *h) {
-  int nb_kmers = 0, dret = 0;
-  gzFile fp;
-	kstream_t *ks;
-	kstring_t *str;
-  khiter_t k;
-  str = calloc(1, sizeof(kstring_t));
-
-  fp = gzopen(counts_file, "r");
-  if(!fp) { fprintf(stderr, "Failed to open %s\n", counts_file); exit(EXIT_FAILURE); }
-
-  ks = ks_init(fp);
-  while (ks_getuntil(ks, 0, str, &dret) >= 0) {
-    //uint64_t hashed_kmer = hash_kmer(str->s, k_length);
-    uint64_t hashed_kmer = dna_to_int(str->s, k_length);
-    //fprintf(stderr, "%s => %" PRIu64 "\n", str->s, hashed_kmer);
-
-    k = kh_put(kmers, h, hashed_kmer, &dret);
-    kh_value(h, k) = VIRGIN_KMER;
-
-    // skip the rest of the line
-		if (dret != '\n') while ((dret = ks_getc(ks)) > 0 && dret != '\n');
-    nb_kmers++;
-  }
-
-  ks_destroy(ks);
-  gzclose(fp);
-  free(str->s); free(str);
-  return nb_kmers;
-}
-
-char *extend_kmer(uint64_t kmer, size_t k_length, kmers_hash_t *h, int reverse, int *ret) {
-  khiter_t k;
-  kstring_t *assembly = calloc(1, sizeof(kstring_t));
-  char *kmer_str = (char*)calloc(k_length + 1, 1);
-
-  uint64_t neighbor_kmer, match_kmer, assembly_kmer;
-  khiter_t match_k;
-  int nb_match = 1;
-  char nuc;
-
-  if(reverse)
-    assembly_kmer = int_revcomp(kmer,k_length);
-  else
-    assembly_kmer = kmer;
-
-  int_to_dna(assembly_kmer, k_length, kmer_str);
-  kputs(kmer_str,assembly);
-
-  while (nb_match == 1) {
-    nb_match = 0;
-
-    for(int p = 0; p < NB_NUCLEOTIDES; p++) {
-      neighbor_kmer = next_kmer(k_length, NUCLEOTIDES[p], assembly_kmer);
-      if(reverse)
-        k = kh_get(kmers, h, int_revcomp(neighbor_kmer,k_length));
-      else
-        k = kh_get(kmers, h, neighbor_kmer);
-      if(k != kh_end(h) && kh_value(h,k) == VIRGIN_KMER) {
-        nb_match++;
-        nuc = NUCLEOTIDES[p];
-        match_k = k;
-        match_kmer = neighbor_kmer;
-      }
-      if(nb_match > 1)
-        break;
-    }
-
-    if(nb_match == 1) {
-      kh_value(h, match_k) = ASSEMBLED_KMER;
-      kputc(nuc,assembly);
-      assembly_kmer = match_kmer;
-    } else if (nb_match > 1) {
-      *ret = AMBIGUITY_ABORT;
-    } else {
-      *ret = 0;
-    }
-  }
-
-  char *return_value = ks_release(assembly);
-  free(assembly);
-
-  if(reverse) {
-    char *reverse_assembly = malloc(strlen(return_value) + 1);
-    revcomp(return_value, reverse_assembly, strlen(return_value));
-    free(return_value);
-    return_value = reverse_assembly;
-  }
-
-  return return_value;
-}
-
-void assemble_kmers(kmers_hash_t *h, size_t k_length) {
-  khiter_t k, k2;
-  int ret = 0, nb_ambiguous_assemblies = 0, i = 0;
-  assemblies_array_t *a = (assemblies_array_t*)calloc(1, sizeof(assemblies_array_t));
-  kv_init(*a);
-
-  for(k = kh_begin(h); k != kh_end(h); ++k) {
-    if(!kh_exist(h, k)) continue;
-    if(kh_value(h,k) == VIRGIN_KMER) {
-      kh_value(h, k) = ASSEMBLED_KMER;
-
-      char *right_assembly  = extend_kmer(kh_key(h, k), k_length, h, 0, &ret);
-      if(ret == AMBIGUITY_ABORT)
-        nb_ambiguous_assemblies++;
-
-      char *left_assembly   = extend_kmer(kh_key(h, k), k_length, h, 1, &ret);
-      if(ret == AMBIGUITY_ABORT)
-        nb_ambiguous_assemblies++;
-
-      // Merge left and right assemblies
-      char *assembly = malloc(strlen(left_assembly) + strlen(right_assembly) - k_length + 1);
-      strcpy(assembly, left_assembly);
-      strcat(assembly, &right_assembly[k_length]);
-      kv_push(char*, *a, assembly);
-
-      //free(assembly);
-      free(right_assembly);
-      free(left_assembly);
-      i++;
-    }
-  }
-  fprintf(stderr, "%zu assemblies have been made with k-1 links\n", kv_size(*a));
-
-  // for(int j = 0; j < kv_size(*a); j++) {
-  //   char *assembly = kv_A(*a,j);
-  //   fprintf(stdout, ">%d\n%s\n", j, assembly);
-  //   free(assembly);
-  // }
-  // Now we scaffold the assemblies
-  for(i = k_length - 1; i > 15; i--) {
-    //char *left_kmer   = (char*)calloc(i + 1, 1);
-    //char *right_kmer  = (char*)calloc(i + 1, 1);
-    khash_t(kmers) *left_h  = kh_init(kmers);
-    khash_t(kmers) *right_h = kh_init(kmers);
-    assemblies_array_t *new_a = (assemblies_array_t*)calloc(1, sizeof(assemblies_array_t));
-
-    fprintf(stderr, "Merging scaffold with k = %d\n", i);
-
-    fprintf(stderr, "Creating kmer-end indexes\n");
-    // First we index the start and ends of each assembly
-    for(int j = 0; j < kv_size(*a); j++) {
-      char *assembly = kv_A(*a,j);
-      uint64_t left_kmer  = dna_to_int(assembly, i);
-      uint64_t right_kmer = dna_to_int(&assembly[strlen(assembly) - i], i);
-
-      //fprintf(stderr, "Assembly: %s\n", assembly);
-      //fprintf(stderr, "left kmer: %" PRIu64 "\tright kmer: %" PRIu64 "\n", left_kmer, right_kmer);
-      //strncpy(left_kmer,  assembly, i);
-      //strncpy(right_kmer, &assembly[strlen(assembly) - i], i);
-      k = kh_get(kmers, left_h, left_kmer);
-      if(k == kh_end(left_h)) {
-        k = kh_put(kmers, left_h, left_kmer, &ret);
-        kh_value(left_h, k) = j + 1;
-      } else {
-        kh_value(left_h, k) = 0;
-      }
-
-      k = kh_get(kmers, right_h, right_kmer);
-      if(k == kh_end(right_h)) {
-        k = kh_put(kmers, right_h, right_kmer, &ret);
-        kh_value(right_h, k) = j + 1;
-      } else {
-        kh_value(right_h, k) = 0;
-      }
-    }
-
-    fprintf(stderr, "Merging assemblies\n");
-    // Now we try to merge assemblies
-    for(k = kh_begin(right_h); k != kh_end(right_h); ++k) {
-      if(!kh_exist(right_h, k)) continue;
-      if(kh_value(right_h, k) == 0) continue;
-
-      char *left_assembly = kv_A(*a, kh_value(right_h, k) - 1);
-
-      if(!left_assembly) continue;
-
-      k2 = kh_get(kmers, left_h, kh_key(right_h, k));
-
-      if(k2 != kh_end(left_h) && kh_value(left_h, k2) != 0 && kh_value(left_h, k2) != kh_value(right_h, k)) {
-
-        // Merge the two sequences into a new assembly
-        char *right_assembly = kv_A(*a, kh_value(left_h, k2) - 1);
-
-        if(!right_assembly) continue;
-
-        //fprintf(stderr, "right_assembly: %d => %s\n", kh_value(left_h, k2), right_assembly);
-        //fprintf(stderr, "left_assembly: %d => %s\n",  kh_value(right_h, k), left_assembly);
-
-        char *assemblies_merge = malloc(strlen(right_assembly) + strlen(left_assembly) - i + 1);
-        strcpy(assemblies_merge, left_assembly);
-        strcat(assemblies_merge, &right_assembly[i]);
-        kv_push(char*, *new_a, assemblies_merge);
-        kv_A(*a, kh_value(right_h, k) - 1) = NULL;
-        kv_A(*a, kh_value(left_h, k2) - 1) = NULL;
-        free(right_assembly);
-        free(left_assembly);
-      }
-    }
-
-    fprintf(stderr, "Add un-merged assemblies\n");
-    // Add assemblies that were not merged
-    for(int j = 0; j < kv_size(*a); j++) {
-      char *assembly = kv_A(*a,j);
-      if(assembly) {
-        kv_push(char*, *new_a, assembly);
-      }
-    }
-    fprintf(stderr, "%zu assemblies after merging\n", kv_size(*new_a));
-    // Delete previous assebly array and replace it with the new one
-    kv_destroy(*a);
-    a = new_a;
-  }
-  for(int j = 0; j < kv_size(*a); j++) {
-     char *assembly = kv_A(*a,j);
-     fprintf(stdout, ">%d\n%s\n", j, assembly);
-     free(assembly);
-  }
-  fprintf(stderr, "%d ambiguous assemlies\n", nb_ambiguous_assemblies);
-  kv_destroy(*a);
-  free(a);
-}
+typedef kvec_t(assembly_t*) assemblies_array_t;
 
 int main(int argc, char *argv[])
 {
-	//fprintf(stderr, "[TOTO]\n");
   char *counts_file;
   int k_length = 31;
+
+  int c;
+  while ((c = getopt(argc, argv, "k:")) >= 0) {
+    switch (c) {
+      case 'k': k_length = atoi(optarg); break;
+    }
+  }
 
   if (optind == argc) {
 		fprintf(stderr, "\n");
@@ -266,12 +67,176 @@ int main(int argc, char *argv[])
 	}
 
   counts_file = argv[optind++];
-  khash_t(kmers) *h = kh_init(kmers);
 
   fprintf(stderr, "Loading k-mers into memory\n");
-  int nb_kmers = load_kmers(counts_file,k_length,h);
+
+  int nb_kmers = 0, dret = 0;
+  gzFile fp;
+	kstream_t *ks;
+	kstring_t *str;
+  assemblies_array_t *a = (assemblies_array_t*)calloc(1, sizeof(assemblies_array_t));
+  khiter_t k, k2;
+
+  kv_init(*a);
+  str = calloc(1, sizeof(kstring_t));
+
+  fp = gzopen(counts_file, "r");
+  if(!fp) { fprintf(stderr, "Failed to open %s\n", counts_file); exit(EXIT_FAILURE); }
+
+  ks = ks_init(fp);
+  // Skip headers
+  ks_getuntil(ks, KS_SEP_LINE, str, &dret);
+  while (ks_getuntil(ks, 0, str, &dret) >= 0) {
+    assembly_t *assembly = (assembly_t*)calloc(1, sizeof(assembly_t));
+    assembly->ref_kmer_id = nb_kmers;
+    assembly->seq         = ks_release(str);
+    assembly->nb_merged_kmers = 1;
+    if(dret != '\n' && ks_getuntil(ks, 0, str, &dret) > 0 && isdigit(str->s[0])) {
+      assembly->pvalue = atof(str->s);
+      kv_push(assembly_t*, *a, assembly);
+    } else {
+      assembly_destroy(assembly);
+    }
+    // skip the rest of the line
+		if (dret != '\n') while ((dret = ks_getc(ks)) > 0 && dret != '\n');
+    nb_kmers++;
+  }
+  ks_destroy(ks);
+  gzclose(fp);
+
   fprintf(stderr, "%d k-mers loaded\n", nb_kmers);
   fprintf(stderr, "Assembling k-mers\n");
-  assemble_kmers(h,k_length);
+
+  for(int i = k_length - 1; i >= MIN_ASSEMBLY_K; i--) {
+    int has_merge_assemblies = 1;
+    while(has_merge_assemblies) {
+      has_merge_assemblies = 0;
+
+      khash_t(kmers) *left_h  = kh_init(kmers);
+      khash_t(kmers) *right_h = kh_init(kmers);
+      assemblies_array_t *new_a = (assemblies_array_t*)calloc(1, sizeof(assemblies_array_t));
+      kv_init(*new_a);
+
+      fprintf(stderr, "Merging sequences with k = %d\n", i);
+
+      fprintf(stderr, "Creating kmer-end indexes\n");
+
+      // First we index the start and ends of each assembly
+      for(int j = 0; j < kv_size(*a); j++) {
+        assembly_t *assembly = kv_A(*a,j);
+        if(strlen(assembly->seq) <= i) continue;
+        uint64_t left_kmer  = dna_to_int(assembly->seq, i);
+        uint64_t right_kmer = dna_to_int(&assembly->seq[strlen(assembly->seq) - i], i);
+
+        k = kh_get(kmers, left_h, left_kmer);
+        if(k == kh_end(left_h)) {
+          k = kh_put(kmers, left_h, left_kmer, &dret);
+          kh_value(left_h, k) = j + 1;
+        } else {
+          kh_value(left_h, k) = 0;
+        }
+
+        k = kh_get(kmers, right_h, right_kmer);
+        if(k == kh_end(right_h)) {
+          k = kh_put(kmers, right_h, right_kmer, &dret);
+          kh_value(right_h, k) = j + 1;
+        } else {
+          kh_value(right_h, k) = 0;
+        }
+      }
+
+      fprintf(stderr, "Merging sequences\n");
+      // Now we try to merge assemblies
+      for(k = kh_begin(right_h); k != kh_end(right_h); ++k) {
+        if(!kh_exist(right_h, k)) continue;
+        if(kh_value(right_h, k) == 0) continue;
+
+        assembly_t *left_assembly = kv_A(*a, kh_value(right_h, k) - 1);
+
+        if(!left_assembly) continue;
+
+        k2 = kh_get(kmers, left_h, kh_key(right_h, k));
+
+        if(k2 != kh_end(left_h) && kh_value(left_h, k2) != 0 && kh_value(left_h, k2) != kh_value(right_h, k)) {
+
+          has_merge_assemblies = 1;
+          // Merge the two sequences into a new assembly
+          assembly_t *right_assembly = kv_A(*a, kh_value(left_h, k2) - 1);
+
+          if(!right_assembly) continue;
+
+          assembly_t *assemblies_merge, *removed_assembly;
+          // Keep the k-mers with lowest pvalue to represent the assembly
+          if(left_assembly->pvalue < right_assembly->pvalue) {
+            assemblies_merge = left_assembly;
+            removed_assembly = right_assembly;
+          } else {
+            assemblies_merge = right_assembly;
+            removed_assembly = left_assembly;
+          }
+          char *merge_seq = malloc(strlen(right_assembly->seq) + strlen(left_assembly->seq) - i + 1);
+          strcpy(merge_seq, left_assembly->seq);
+          strcat(merge_seq, &right_assembly->seq[i]);
+
+          free(right_assembly->seq);
+          free(left_assembly->seq);
+          right_assembly->seq = NULL;
+          left_assembly->seq  = NULL;
+          assemblies_merge->nb_merged_kmers = left_assembly->nb_merged_kmers + right_assembly->nb_merged_kmers;
+          assemblies_merge->seq = merge_seq;
+          assembly_destroy(removed_assembly);
+
+          kv_push(assembly_t*, *new_a, assemblies_merge);
+          kv_A(*a, kh_value(right_h, k) - 1) = NULL;
+          kv_A(*a, kh_value(left_h, k2) - 1) = NULL;
+        }
+      }
+
+      fprintf(stderr, "Add un-merged sequences\n");
+      // Add assemblies that were not merged
+      for(int j = 0; j < kv_size(*a); j++) {
+        assembly_t *assembly = kv_A(*a,j);
+        if(assembly) {
+          kv_push(assembly_t*, *new_a, assembly);
+        }
+      }
+      fprintf(stderr, "%zu assemblies after merging\n", kv_size(*new_a));
+      // Delete previous assebly array and replace it with the new one
+      kv_destroy(*a);
+      a = new_a;
+      // Delete hashes
+      kh_destroy(kmers, left_h);
+      kh_destroy(kmers, right_h);
+    }
+  }
+
+  // Sort assemblies by ref_kmer_id
+  qsort(a->a, kv_size(*a), sizeof(a->a[0]), cmp_assembly);
+
+  fp = gzopen(counts_file, "r");
+  if(!fp) { fprintf(stderr, "Failed to open %s\n", counts_file); exit(EXIT_FAILURE); }
+
+  ks = ks_init(fp);
+  nb_kmers = 0;
+  int j = 0;
+  // Print headers
+  ks_getuntil(ks, KS_SEP_LINE, str, &dret);
+  fprintf(stdout, "nb_merged_kmers\tassembly\t%s\n", str->s);
+  while (ks_getuntil(ks, KS_SEP_LINE, str, &dret) >= 0) {
+    if(nb_kmers == a->a[j]->ref_kmer_id) {
+      assembly_t *assembly = kv_A(*a,j);
+      fprintf(stdout, "%d\t%s\t%s\n",assembly->nb_merged_kmers,assembly->seq,str->s);
+      assembly_destroy(assembly);
+      kv_A(*a, j) = NULL;
+      j++;
+    }
+    nb_kmers++;
+  }
+  gzclose(fp);
+  ks_destroy(ks);
+  free(str->s); free(str);
+
+  kv_destroy(*a);
+  //free(a);
 	return 0;
 }
