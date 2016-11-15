@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-g -Wall -O2 -Wno-unused-function -std=c99
+CFLAGS=-g -Wall -O2 -Wno-unused-function
 HEADERS=kstring.h
 OBJECTS=$(HEADERS:.h=.o)
 LIBS=-lz
