@@ -11,7 +11,7 @@
 #include "kvec.h"
 #include "dna.h"
 
-#define VERSION "0.0.2"
+#define VERSION "0.0.3"
 
 #define MIN_ASSEMBLY_K 15
 
