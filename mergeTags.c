@@ -221,7 +221,7 @@ int main(int argc, char *argv[])
   int j = 0;
   // Print headers
   ks_getuntil(ks, KS_SEP_LINE, str, &dret);
-  fprintf(stdout, "nb_merged_kmers\tassembly\t%s\n", str->s);
+  fprintf(stdout, "nb_merged_kmers\tcontig\t%s\n", str->s);
   while (ks_getuntil(ks, KS_SEP_LINE, str, &dret) >= 0 && j < kv_size(*a)) {
     if(nb_kmers == a->a[j]->ref_kmer_id) {
       assembly_t *assembly = kv_A(*a,j);
