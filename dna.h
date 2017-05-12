@@ -39,7 +39,8 @@ static const int NB_NUCLEOTIDES = 4;
 
 static inline void int_to_dna(uint64_t code, size_t dna_length, char *dna) {
   uint64_t mask = 3;
-  for (int i = 0; i < dna_length; i++) {
+  int i = 0;
+  for (; i < dna_length; i++) {
     dna[dna_length-i-1] = NUCLEOTIDES[code & mask];
     code >>=2;
   }
@@ -48,7 +49,8 @@ static inline void int_to_dna(uint64_t code, size_t dna_length, char *dna) {
 static inline uint64_t dna_to_int(const char *dna, size_t dna_length) {
   // TODO we should check that dna_length is smaller that 32.
   uint64_t code = 0;
-  for (size_t i = 0; i < dna_length ; i++) {
+  size_t i = 0;
+  for (; i < dna_length ; i++) {
     code <<= 2;
     code |= base_to_int[(int)dna[i]];
     //fprintf(stderr, "%c => %d => %" PRIu64 "\n", dna[i], base_to_int[(int)dna[i]], code);
@@ -70,7 +72,8 @@ static inline uint64_t int_revcomp(uint64_t factor, uint32_t length) {
   mask_lsb = 3;
   uint64_t shift = 0;
   uint64_t result = 0;
-  for(int j = 0; j < length; j++){
+  int j = 0;
+  for(; j < length; j++){
     result <<= 2;
     // get the leftmost nucleotide and put it at the end
     result |= (factor & mask_lsb) >> shift;
@@ -123,7 +126,8 @@ uint64_t hash_kmer(const char *seq, size_t k) {
 }
 
 char *revcomp(const char *forward, char *reverse, size_t len) {
-  for (size_t k = 0; k < len; k++) {
+  size_t k = 0;
+  for (; k < len; k++) {
     char c = forward[k];
     char magic = c & 2 ? 4 : 21;
     reverse[len - k - 1] = c ^ magic;
