@@ -94,7 +94,7 @@ int main(int argc, char *argv[])
 
   fprintf(stderr, "Loading k-mers into memory\n");
 
-  int nb_kmers = 0, dret = 0;
+  int nb_kmers = 0, dret = 0, i, j;
   gzFile fp;
 	kstream_t *ks;
 	kstring_t *str;
@@ -131,7 +131,7 @@ int main(int argc, char *argv[])
   fprintf(stderr, "%d k-mers loaded\n", nb_kmers);
   fprintf(stderr, "Assembling k-mers\n");
 
-  for(int i = k_length - 1; i >= min_assembly_k; i--) {
+  for(i = k_length - 1; i >= min_assembly_k; i--) {
     int has_merge_assemblies = 1;
     while(has_merge_assemblies) {
       has_merge_assemblies = 0;
@@ -146,7 +146,7 @@ int main(int argc, char *argv[])
       fprintf(stderr, "Creating kmer-end indexes\n");
 
       // First we index the start and ends of each assembly
-      for(int j = 0; j < kv_size(*a); j++) {
+      for(j = 0; j < kv_size(*a); j++) {
         assembly_t *assembly = kv_A(*a,j);
         if(strlen(assembly->seq) <= i) continue;
         uint64_t left_kmer  = dna_to_int(assembly->seq, i);
@@ -254,7 +254,7 @@ int main(int argc, char *argv[])
 
       fprintf(stderr, "Add un-merged sequences\n");
       // Add assemblies that were not merged
-      for(int j = 0; j < kv_size(*a); j++) {
+      for(j = 0; j < kv_size(*a); j++) {
         assembly_t *assembly = kv_A(*a,j);
         if(assembly) {
           kv_push(assembly_t*, *new_a, assembly);
@@ -278,7 +278,7 @@ int main(int argc, char *argv[])
 
   ks = ks_init(fp);
   nb_kmers = 0;
-  int j = 0;
+  j = 0;
   // Print headers
   ks_getuntil(ks, KS_SEP_LINE, str, &dret);
   fprintf(stdout, "nb_merged_kmers\tcontig\t%s\n", str->s);
