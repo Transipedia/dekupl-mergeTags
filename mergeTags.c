@@ -20,6 +20,7 @@ KSEQ_INIT(gzFile, gzread)
 typedef struct {
   uint32_t ref_kmer_id;
   double   pvalue;
+  double   log2fc;
   int      nb_merged_kmers;
   char     *seq;
 } assembly_t;
@@ -64,72 +65,10 @@ void add_assembly_kmer(kmers_hash_t *h, uint64_t kmer, uint32_t assembly_id, uin
   }
 }
 
-int main(int argc, char *argv[])
-{
-  char *counts_file;
-  int k_length = 31;
-  int stranded = 1;
-  int min_assembly_k = MIN_ASSEMBLY_K;
-
-  int c;
-  while ((c = getopt(argc, argv, "nk:m:")) >= 0) {
-    switch (c) {
-      case 'n': stranded = 0; break;
-      case 'k': k_length = atoi(optarg); break;
-      case 'm': min_assembly_k = atoi(optarg); break;
-    }
-  }
-
-  if (optind == argc) {
-		fprintf(stderr, "\n");
-		fprintf(stderr, "Usage:   mergeTags [options] <counts.tsv>\n\n");
-		fprintf(stderr, "Options: -k INT    length of k-mers (max_value: 32) [%d]\n", k_length);
-		fprintf(stderr, "         -m INT    min assembly overlap (max_value: k) [%d]\n", min_assembly_k);
-		fprintf(stderr, "         -n        Unstranded merging procedure\n");
-		fprintf(stderr, "\n");
-		return 1;
-	}
-
-  counts_file = argv[optind++];
-
-  fprintf(stderr, "Loading k-mers into memory\n");
-
-  int nb_kmers = 0, dret = 0, i, j;
-  gzFile fp;
-	kstream_t *ks;
-	kstring_t *str;
-  assemblies_array_t *a = (assemblies_array_t*)calloc(1, sizeof(assemblies_array_t));
+assemblies_array_t* assemble_kmers(assemblies_array_t *assembly_array, int k_length, int min_assembly_k, int stranded) {
+  int i,j;
   khiter_t k, k2;
-
-  kv_init(*a);
-  str = calloc(1, sizeof(kstring_t));
-
-  fp = gzopen(counts_file, "r");
-  if(!fp) { fprintf(stderr, "Failed to open %s\n", counts_file); exit(EXIT_FAILURE); }
-
-  ks = ks_init(fp);
-  // Skip headers
-  ks_getuntil(ks, KS_SEP_LINE, str, &dret);
-  while (ks_getuntil(ks, 0, str, &dret) >= 0) {
-    assembly_t *assembly = (assembly_t*)calloc(1, sizeof(assembly_t));
-    assembly->ref_kmer_id = nb_kmers;
-    assembly->seq         = ks_release(str);
-    assembly->nb_merged_kmers = 1;
-    if(dret != '\n' && ks_getuntil(ks, 0, str, &dret) > 0 && isdigit(str->s[0])) {
-      assembly->pvalue = atof(str->s);
-      kv_push(assembly_t*, *a, assembly);
-    } else {
-      assembly_destroy(assembly);
-    }
-    // skip the rest of the line
-		if (dret != '\n') while ((dret = ks_getc(ks)) > 0 && dret != '\n');
-    nb_kmers++;
-  }
-  ks_destroy(ks);
-  gzclose(fp);
-
-  fprintf(stderr, "%d k-mers loaded\n", nb_kmers);
-  fprintf(stderr, "Assembling k-mers\n");
+  assemblies_array_t *a = assembly_array;
 
   for(i = k_length - 1; i >= min_assembly_k; i--) {
     int has_merge_assemblies = 1;
@@ -269,9 +208,115 @@ int main(int argc, char *argv[])
       kh_destroy(kmers, right_h);
     }
   }
+  return a;
+}
+
+int main(int argc, char *argv[])
+{
+  char *counts_file;
+  int k_length = 31;
+  int stranded = 1;
+  int min_assembly_k = MIN_ASSEMBLY_K;
+
+  int c;
+  while ((c = getopt(argc, argv, "nk:m:")) >= 0) {
+    switch (c) {
+      case 'n': stranded = 0; break;
+      case 'k': k_length = atoi(optarg); break;
+      case 'm': min_assembly_k = atoi(optarg); break;
+    }
+  }
+
+  if (optind == argc) {
+		fprintf(stderr, "\n");
+		fprintf(stderr, "Usage:   mergeTags [options] <counts.tsv>\n\n");
+		fprintf(stderr, "Options: -k INT    length of k-mers (max_value: 32) [%d]\n", k_length);
+		fprintf(stderr, "         -m INT    min assembly overlap (max_value: k) [%d]\n", min_assembly_k);
+		fprintf(stderr, "         -n        Unstranded merging procedure\n");
+		fprintf(stderr, "\n");
+		return 1;
+	}
+
+  counts_file = argv[optind++];
+
+  fprintf(stderr, "Loading k-mers into memory\n");
+
+  int nb_kmers = 0, dret = 0, nb_cols = 0, i, j;
+  double *cols;
+  gzFile fp;
+	kstream_t *ks;
+	kstring_t *str;
+  assemblies_array_t *up_assemblies = (assemblies_array_t*)calloc(1, sizeof(assemblies_array_t));
+  assemblies_array_t *down_assemblies = (assemblies_array_t*)calloc(1, sizeof(assemblies_array_t));
+
+  kv_init(*up_assemblies);
+  kv_init(*down_assemblies);
+  str = calloc(1, sizeof(kstring_t));
+
+  fp = gzopen(counts_file, "r");
+  if(!fp) { fprintf(stderr, "Failed to open %s\n", counts_file); exit(EXIT_FAILURE); }
+
+  ks = ks_init(fp);
+  // Skip headers and count number of cols
+  while(ks_getuntil(ks, 0, str, &dret) > 0 && dret != '\n') {
+    nb_cols++;
+  }
+  cols = (double*) malloc(nb_cols * sizeof(double));
+
+  while (ks_getuntil(ks, 0, str, &dret) >= 0) {
+    assembly_t *assembly = (assembly_t*)calloc(1, sizeof(assembly_t));
+    assembly->ref_kmer_id = nb_kmers;
+    assembly->seq         = ks_release(str);
+    assembly->nb_merged_kmers = 1;
+
+    // Get all remaining columns
+    for(i = 0; i < nb_cols; i++) {
+      if(ks_getuntil(ks, 0, str, &dret) > 0) {
+        cols[i] = atof(str->s);
+      } else {
+        fprintf(stderr, "Invalid number of columns at line %d\n", nb_kmers+2);
+        exit(1);
+      }
+    }
+
+    if (dret == '\n') {
+      assembly->pvalue = cols[0];
+      assembly->log2fc = cols[3];
+      //fprintf(stderr, "LOG2FC : %f\n", cols[3]);
+      if(assembly->log2fc > 0) {
+        kv_push(assembly_t*, *up_assemblies, assembly);
+      } else {
+        kv_push(assembly_t*, *down_assemblies, assembly);
+        //fprintf(stderr, "TOTO\n");
+      }
+    } else {
+      fprintf(stderr, "Invalid number of columns at line %d\n", nb_kmers+2);
+      exit(1);
+    }
+
+    nb_kmers++;
+  }
+  ks_destroy(ks);
+  gzclose(fp);
+
+  fprintf(stderr, "%d k-mers loaded\n", nb_kmers);
+  fprintf(stderr, "Assembling k-mers\n");
+
+  // Assemble kmers with positive log2fc
+  fprintf(stderr, "Assembling %d up regulated k-mers\n", kv_size(*up_assemblies));
+  up_assemblies   = assemble_kmers(up_assemblies, k_length, min_assembly_k, stranded);
+  // Assemble kmers with negative log2fc
+  fprintf(stderr, "Assembling %d down regulated k-mers\n", kv_size(*down_assemblies));
+  down_assemblies = assemble_kmers(down_assemblies, k_length, min_assembly_k, stranded);
+  // Merge all assemblies together
+  fprintf(stderr, "Merging up and down assemblies\n");
+  for(j = 0; j < kv_size(*down_assemblies); j++) {
+    kv_push(assembly_t*, *up_assemblies, kv_A(*down_assemblies, j));
+  }
+  kv_destroy(*down_assemblies);
 
   // Sort assemblies by ref_kmer_id
-  qsort(a->a, kv_size(*a), sizeof(a->a[0]), cmp_assembly);
+  qsort(up_assemblies->a, kv_size(*up_assemblies), sizeof(up_assemblies->a[0]), cmp_assembly);
 
   fp = gzopen(counts_file, "r");
   if(!fp) { fprintf(stderr, "Failed to open %s\n", counts_file); exit(EXIT_FAILURE); }
@@ -282,12 +327,12 @@ int main(int argc, char *argv[])
   // Print headers
   ks_getuntil(ks, KS_SEP_LINE, str, &dret);
   fprintf(stdout, "nb_merged_kmers\tcontig\t%s\n", str->s);
-  while (ks_getuntil(ks, KS_SEP_LINE, str, &dret) >= 0 && j < kv_size(*a)) {
-    if(nb_kmers == a->a[j]->ref_kmer_id) {
-      assembly_t *assembly = kv_A(*a,j);
+  while (ks_getuntil(ks, KS_SEP_LINE, str, &dret) >= 0 && j < kv_size(*up_assemblies)) {
+    if(nb_kmers == up_assemblies->a[j]->ref_kmer_id) {
+      assembly_t *assembly = kv_A(*up_assemblies,j);
       fprintf(stdout, "%d\t%s\t%s\n",assembly->nb_merged_kmers,assembly->seq,str->s);
       assembly_destroy(assembly);
-      kv_A(*a, j) = NULL;
+      kv_A(*up_assemblies, j) = NULL;
       j++;
     }
     nb_kmers++;
@@ -296,7 +341,7 @@ int main(int argc, char *argv[])
   ks_destroy(ks);
   free(str->s); free(str);
 
-  kv_destroy(*a);
+  kv_destroy(*up_assemblies);
   //free(a);
 	return 0;
 }
